@@ -536,6 +536,9 @@ video {
 .grid {
   display: grid;
 }
+.contents {
+  display: contents;
+}
 .max-h-\[80vh\] {
   max-height: 80vh;
 }

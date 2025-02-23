@@ -1,9 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { YoutubeTranscript } from 'youtube-transcript';
+import { TranslationServiceClient } from '@google-cloud/translate';
 
 // 環境変数からAPI Keyを取得
 const API_KEY = process.env.YOUTUBE_API_KEY;
+const GOOGLE_CLOUD_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID;
+const GOOGLE_CLOUD_LOCATION = 'global';
+
+// 翻訳クライアントの初期化
+const translationClient = new TranslationServiceClient();
+
+// テキストを翻訳する関数
+async function translateText(text: string): Promise<string> {
+  try {
+    const projectId = GOOGLE_CLOUD_PROJECT_ID;
+    const location = GOOGLE_CLOUD_LOCATION;
+    
+    const request = {
+      parent: `projects/${projectId}/locations/${location}`,
+      contents: [text],
+      mimeType: 'text/plain',
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'ja',
+    };
+
+    const [response] = await translationClient.translateText(request);
+    return response.translations?.[0]?.translatedText || text;
+  } catch (error) {
+    console.error('翻訳エラー:', error);
+    return text; // エラーの場合は原文を返す
+  }
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -63,14 +91,22 @@ export async function GET(req: NextRequest) {
           },
         });
       } catch (jaError) {
-        // 日本語字幕が取得できない場合、英語で試行
+        // 日本語字幕が取得できない場合、英語で取得して翻訳
         try {
           const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId, {
             lang: 'en'
           });
 
-          // 字幕テキストをSRT形式に変換
-          const srtContent = transcriptItems
+          // 各字幕テキストを翻訳
+          const translatedItems = await Promise.all(
+            transcriptItems.map(async (item) => ({
+              ...item,
+              text: await translateText(item.text)
+            }))
+          );
+
+          // 翻訳された字幕テキストをSRT形式に変換
+          const srtContent = translatedItems
             .map((item, index) => {
               const startTime = formatTime(item.offset);
               const endTime = formatTime(item.offset + item.duration);
@@ -83,7 +119,7 @@ export async function GET(req: NextRequest) {
             status: 200,
             headers: {
               "Content-Type": "text/plain; charset=utf-8",
-              "Content-Disposition": `attachment; filename="${safeTitle}_transcript.srt"`,
+              "Content-Disposition": `attachment; filename="${safeTitle}_transcript_translated.srt"`,
             },
           });
         } catch (enError) {

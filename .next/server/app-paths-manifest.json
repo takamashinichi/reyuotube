@@ -1,3 +1,5 @@
 {
+  "/api/generateScript/route": "app/api/generateScript/route.js",
+  "/api/getTranscript/route": "app/api/getTranscript/route.js",
   "/page": "app/page.js"
 }
