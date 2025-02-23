@@ -33,6 +33,16 @@ async function translateText(text: string): Promise<string> {
   }
 }
 
+// 字幕アイテムをテキストに変換する関数
+function formatTranscriptToText(items: any[]): string {
+  return items
+    .map(item => {
+      const timeCode = formatTimeForDisplay(item.offset);
+      return `[${timeCode}] ${item.text}`;
+    })
+    .join('\n\n');
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -63,8 +73,9 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: "指定された動画が見つかりませんでした。" }, { status: 404 });
       }
 
-      // 動画タイトルを取得
+      // 動画タイトルと情報を取得
       const videoTitle = videoResponse.data.items[0].snippet?.title || videoId;
+      const videoDescription = videoResponse.data.items[0].snippet?.description || '';
       const safeTitle = videoTitle.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_');
 
       // 字幕を取得（まず日本語で試行）
@@ -73,21 +84,22 @@ export async function GET(req: NextRequest) {
           lang: 'ja'
         });
 
-        // 字幕テキストをSRT形式に変換
-        const srtContent = transcriptItems
-          .map((item, index) => {
-            const startTime = formatTime(item.offset);
-            const endTime = formatTime(item.offset + item.duration);
-            return `${index + 1}\n${startTime} --> ${endTime}\n${item.text}\n`;
-          })
-          .join('\n');
+        // テキストコンテンツを生成
+        const textContent = [
+          `タイトル: ${videoTitle}`,
+          `URL: https://www.youtube.com/watch?v=${videoId}`,
+          '',
+          '=== 字幕テキスト ===',
+          '',
+          formatTranscriptToText(transcriptItems)
+        ].join('\n');
 
         // レスポンスを返す
-        return new NextResponse(srtContent, {
+        return new NextResponse(textContent, {
           status: 200,
           headers: {
             "Content-Type": "text/plain; charset=utf-8",
-            "Content-Disposition": `attachment; filename="${safeTitle}_transcript.srt"`,
+            "Content-Disposition": `attachment; filename="${safeTitle}.txt"`,
           },
         });
       } catch (jaError) {
@@ -105,21 +117,22 @@ export async function GET(req: NextRequest) {
             }))
           );
 
-          // 翻訳された字幕テキストをSRT形式に変換
-          const srtContent = translatedItems
-            .map((item, index) => {
-              const startTime = formatTime(item.offset);
-              const endTime = formatTime(item.offset + item.duration);
-              return `${index + 1}\n${startTime} --> ${endTime}\n${item.text}\n`;
-            })
-            .join('\n');
+          // テキストコンテンツを生成
+          const textContent = [
+            `タイトル: ${videoTitle}`,
+            `URL: https://www.youtube.com/watch?v=${videoId}`,
+            '',
+            '=== 翻訳済み字幕テキスト ===',
+            '',
+            formatTranscriptToText(translatedItems)
+          ].join('\n');
 
           // レスポンスを返す
-          return new NextResponse(srtContent, {
+          return new NextResponse(textContent, {
             status: 200,
             headers: {
               "Content-Type": "text/plain; charset=utf-8",
-              "Content-Disposition": `attachment; filename="${safeTitle}_transcript_translated.srt"`,
+              "Content-Disposition": `attachment; filename="${safeTitle}_translated.txt"`,
             },
           });
         } catch (enError) {
@@ -146,14 +159,10 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// ミリ秒をSRT形式の時間文字列に変換する関数
-function formatTime(ms: number): string {
+// 表示用の時間フォーマット（MM:SS）
+function formatTimeForDisplay(ms: number): string {
   const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  const milliseconds = Math.floor((ms % 1000) / 10); // 2桁の精度に変換
-
-  const pad = (num: number, size: number) => num.toString().padStart(size, '0');
-  return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(seconds, 2)},${pad(milliseconds, 2)}0`;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 } 
