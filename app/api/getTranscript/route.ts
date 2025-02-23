@@ -2,13 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { YoutubeTranscript } from 'youtube-transcript';
 import { TranslationServiceClient } from '@google-cloud/translate';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from 'openai';
 
 // 環境変数からAPI Keyを取得
 const API_KEY = process.env.YOUTUBE_API_KEY;
 const GOOGLE_CLOUD_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID;
 const GOOGLE_CLOUD_LOCATION = 'global';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// 翻訳クライアントの初期化
+// AIクライアントの初期化
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY || '');
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 const translationClient = new TranslationServiceClient();
 
 // テキストを翻訳する関数
@@ -29,7 +35,7 @@ async function translateText(text: string): Promise<string> {
     return response.translations?.[0]?.translatedText || text;
   } catch (error) {
     console.error('翻訳エラー:', error);
-    return text; // エラーの場合は原文を返す
+    return text;
   }
 }
 
@@ -43,10 +49,113 @@ function formatTranscriptToText(items: any[]): string {
     .join('\n\n');
 }
 
+// Geminiを使用して台本を生成する関数
+async function generateScriptWithGemini(text: string, videoTitle: string): Promise<string> {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    const prompt = `
+以下の字幕テキストから、魅力的な台本を作成してください。
+動画タイトル: ${videoTitle}
+
+字幕テキスト:
+${text}
+
+以下の要素を含めて台本を構成してください：
+1. 導入部（視聴者の興味を引く開始）
+2. 本編（内容を論理的に展開）
+3. まとめ（重要ポイントの復習）
+4. コールトゥアクション（視聴者への呼びかけ）
+
+台本は読みやすく、自然な日本語で書いてください。`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    return response.text();
+  } catch (error) {
+    console.error('Gemini生成エラー:', error);
+    throw error;
+  }
+}
+
+// GPTを使用して台本を生成する関数
+async function generateScriptWithGPT(text: string, videoTitle: string): Promise<string> {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4-turbo-preview",
+      messages: [
+        {
+          role: "system",
+          content: "あなたはプロの動画台本作成者です。魅力的で視聴者を引き付ける台本を作成してください。"
+        },
+        {
+          role: "user",
+          content: `
+以下の字幕テキストから、魅力的な台本を作成してください。
+動画タイトル: ${videoTitle}
+
+字幕テキスト:
+${text}
+
+以下の要素を含めて台本を構成してください：
+1. 導入部（視聴者の興味を引く開始）
+2. 本編（内容を論理的に展開）
+3. まとめ（重要ポイントの復習）
+4. コールトゥアクション（視聴者への呼びかけ）
+
+台本は読みやすく、自然な日本語で書いてください。`
+        }
+      ]
+    });
+
+    return response.choices[0]?.message?.content || '';
+  } catch (error) {
+    console.error('GPT生成エラー:', error);
+    throw error;
+  }
+}
+
+// Cloud AIを使用して台本を生成する関数
+async function generateScriptWithCloudAI(text: string, videoTitle: string): Promise<string> {
+  try {
+    const projectId = GOOGLE_CLOUD_PROJECT_ID;
+    const location = GOOGLE_CLOUD_LOCATION;
+    
+    const prompt = `
+以下の字幕テキストから、魅力的な台本を作成してください。
+動画タイトル: ${videoTitle}
+
+字幕テキスト:
+${text}
+
+以下の要素を含めて台本を構成してください：
+1. 導入部（視聴者の興味を引く開始）
+2. 本編（内容を論理的に展開）
+3. まとめ（重要ポイントの復習）
+4. コールトゥアクション（視聴者への呼びかけ）
+
+台本は読みやすく、自然な日本語で書いてください。`;
+
+    const request = {
+      parent: `projects/${projectId}/locations/${location}`,
+      contents: [prompt],
+      mimeType: 'text/plain',
+      sourceLanguageCode: 'ja',
+      targetLanguageCode: 'ja',
+    };
+
+    const [response] = await translationClient.translateText(request);
+    return response.translations?.[0]?.translatedText || text;
+  } catch (error) {
+    console.error('Cloud AI生成エラー:', error);
+    throw error;
+  }
+}
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
     const videoId = searchParams.get("videoId");
+    const aiType = searchParams.get("ai") || "none"; // AI種類の取得
 
     if (!videoId) {
       return NextResponse.json({ error: "動画IDが指定されていません。" }, { status: 400 });
@@ -84,14 +193,29 @@ export async function GET(req: NextRequest) {
           lang: 'ja'
         });
 
+        // 基本テキストを生成
+        const baseText = formatTranscriptToText(transcriptItems);
+
+        // AIタイプに応じて台本を生成
+        let scriptContent = '';
+        if (aiType === 'gemini') {
+          scriptContent = await generateScriptWithGemini(baseText, videoTitle);
+        } else if (aiType === 'gpt') {
+          scriptContent = await generateScriptWithGPT(baseText, videoTitle);
+        } else if (aiType === 'cloud') {
+          scriptContent = await generateScriptWithCloudAI(baseText, videoTitle);
+        } else {
+          scriptContent = baseText;
+        }
+
         // テキストコンテンツを生成
         const textContent = [
           `タイトル: ${videoTitle}`,
           `URL: https://www.youtube.com/watch?v=${videoId}`,
           '',
-          '=== 字幕テキスト ===',
+          `=== ${aiType !== 'none' ? 'AI生成台本' : '字幕テキスト'} ===`,
           '',
-          formatTranscriptToText(transcriptItems)
+          scriptContent
         ].join('\n');
 
         // レスポンスを返す
@@ -99,7 +223,7 @@ export async function GET(req: NextRequest) {
           status: 200,
           headers: {
             "Content-Type": "text/plain; charset=utf-8",
-            "Content-Disposition": `attachment; filename="${safeTitle}.txt"`,
+            "Content-Disposition": `attachment; filename="${safeTitle}${aiType !== 'none' ? '_' + aiType : ''}.txt"`,
           },
         });
       } catch (jaError) {
@@ -117,14 +241,29 @@ export async function GET(req: NextRequest) {
             }))
           );
 
+          // 基本テキストを生成
+          const baseText = formatTranscriptToText(translatedItems);
+
+          // AIタイプに応じて台本を生成
+          let scriptContent = '';
+          if (aiType === 'gemini') {
+            scriptContent = await generateScriptWithGemini(baseText, videoTitle);
+          } else if (aiType === 'gpt') {
+            scriptContent = await generateScriptWithGPT(baseText, videoTitle);
+          } else if (aiType === 'cloud') {
+            scriptContent = await generateScriptWithCloudAI(baseText, videoTitle);
+          } else {
+            scriptContent = baseText;
+          }
+
           // テキストコンテンツを生成
           const textContent = [
             `タイトル: ${videoTitle}`,
             `URL: https://www.youtube.com/watch?v=${videoId}`,
             '',
-            '=== 翻訳済み字幕テキスト ===',
+            `=== ${aiType !== 'none' ? 'AI生成台本（翻訳済み）' : '翻訳済み字幕テキスト'} ===`,
             '',
-            formatTranscriptToText(translatedItems)
+            scriptContent
           ].join('\n');
 
           // レスポンスを返す
@@ -132,7 +271,7 @@ export async function GET(req: NextRequest) {
             status: 200,
             headers: {
               "Content-Type": "text/plain; charset=utf-8",
-              "Content-Disposition": `attachment; filename="${safeTitle}_translated.txt"`,
+              "Content-Disposition": `attachment; filename="${safeTitle}_translated${aiType !== 'none' ? '_' + aiType : ''}.txt"`,
             },
           });
         } catch (enError) {
